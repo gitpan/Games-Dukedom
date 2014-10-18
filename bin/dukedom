@@ -1,0 +1,57 @@
+#!/usr/local/bin/perl
+
+use strict;
+use warnings;
+
+use Scalar::Util qw( blessed );
+use Try::Tiny;
+
+use Games::Dukedom;
+
+use Storable qw( freeze thaw );
+
+use Data::Dumper;
+$Data::Dumper::Indent = 1;
+
+my $VERSION = '0.1_1';
+
+while (1) {
+    play_game();
+
+    print "Do you want to play again [Y/n]? ";
+    my $play = <>;
+    chomp($play);
+    $play ||= 'Y';
+
+    last unless $play =~ /^y/i;
+    print "Okay, let's go again. Good luck!\n\n";
+}
+
+exit;
+
+sub play_game {
+    my $game = Games::Dukedom->new;
+
+    do {
+        try {
+            $game->play_one_year;
+        }
+        catch {
+            if ( blessed($_) && $_->isa('Games::Dukedom::Signal') ) {
+                &{ $game->show_msg }( $_->display ) if $_->display;
+                if ( defined( $_->action ) ) {
+                    my $action = $_->action;
+                    $game->input( &{ $game->$action }($_->default) );
+                }
+            }
+            else {
+                die $_;
+            }
+        };
+    } until ( $game->game_over );
+
+    return;
+}
+
+__END__
+

@@ -1,6 +1,6 @@
 package Games::Dukedom;
 
-our $VERSION = 'v0.1_1';
+our $VERSION = 'v0.1.1';
 
 our $DEBUG = 0;
 
@@ -56,6 +56,7 @@ use MooX::Struct -rw, Land => [
       +desire
       +will
       +grain_damage
+      +tension
       )
   ];
 
@@ -63,18 +64,19 @@ use MooX::Struct -rw, Land => [
 use constant RUNNING   => 0;
 use constant RETIRED   => 1;
 use constant KINGDOM   => 2;
-use constant DEPOSED   => -1;
-use constant ABOLISHED => -2;
-use constant QUIT_GAME => -3;
+use constant QUIT_GAME => -1;
+use constant DEPOSED   => -2;
+use constant ABOLISHED => -3;
 
 # magic numbers
-use constant RUNNING          => 0;
 use constant TAX_RATE         => .5;
 use constant MAX_YEAR         => 45;
 use constant MIN_LAND         => 45;
 use constant MIN_POPULATION   => 33;
 use constant MIN_GRAIN        => 429;
 use constant MAX_FOOD_BONUS   => 4;
+use constant LABOR_CAPACITY   => 4;
+use constant SEED_PER_HA      => 2;
 use constant MAX_SALE         => 4000;
 use constant MAX_SELL_TRIES   => 3;
 use constant MIN_LAND_PRICE   => 4;
@@ -161,56 +163,11 @@ my $gauss = sub {
     return $g0;
 };
 
-my $print_msg = sub {
-    my $msg = shift;
-
-    print $msg;
-
-    return;
-};
-
-my $input_yn = sub {
-    my $default = shift || '';
-
-    my $ans = <>;
-    chomp($ans);
-    $ans ||= $default;
-
-    return ( $ans =~ /^(?:q|quit)\s*$/i || $ans =~ /^(?:y|n)$/i )
-      ? lc($ans)
-      : undef;
-};
-
-my $input_value = sub {
-    my $default = shift || 0;
-
-    my $ans = <>;
-    chomp($ans);
-    $ans = $default unless length($ans);
-
-    return ( $ans =~ /^(?:q|quit)\s*$/i || $ans !~ /\D/ ) ? $ans : undef;
-};
-
 class_has signal => (
     is       => 'ro',
     init_arg => undef,
     default  => 'Games::Dukedom::Signal',
     handles  => 'Throwable',
-);
-
-class_has show_msg => (
-    is      => 'rw',
-    default => sub { $print_msg },
-);
-
-class_has get_yn => (
-    is      => 'rw',
-    default => sub { $input_yn },
-);
-
-class_has get_value => (
-    is      => 'rw',
-    default => sub { $input_value },
 );
 
 has _base_values => (
@@ -288,12 +245,6 @@ has land_fertility => (
     },
 );
 
-has war => (
-    is       => 'rwp',
-    init_arg => undef,
-    default  => 0,
-);
-
 has _war => (
     is       => 'ro',
     lazy     => 1,
@@ -326,7 +277,13 @@ has king_unrest => (
     default  => 0,
 );
 
-has black_D => (
+has tax_paid => (
+    is       => 'ro',
+    init_arg => undef,
+    default  => 0,
+);
+
+has _black_D => (
     is       => 'ro',
     init_arg => undef,
     default  => 0,
@@ -365,17 +322,16 @@ sub BUILD {
     return;
 }
 
-# guarantee we have a clean input if needed. this avoids a potential
-# problem if the "clear_" behavior changes.
+# guarantee we have a clean input if needed.
 before throw => sub {
-    my $self   = shift;
-    my %params = @_;
+    my $self = shift;
 
     $self->clear_input;
 
     return;
 };
 
+# intercept a "quit" request
 around input => sub {
     my $orig  = shift;
     my $self  = shift;
@@ -415,8 +371,9 @@ sub play_one_year {
         $self->clear_input;
     }
 
-    #print $self->end_of_year_report();
+    #print $self->_end_of_year_report();
 
+    $self->{tax_paid} += $self->_grain->taxes;
     $self->_clear_steps;
     $self->_clear_population;
     $self->_clear_grain;
@@ -468,8 +425,8 @@ sub _init_year {
 
     $self->_land->{sell_price} = $self->_land->price;
 
-    $self->{_msg} = $self->summary_report;
-    $self->{_msg} .= $self->fertility_report;
+    $self->{_msg} = $self->_summary_report;
+    $self->{_msg} .= $self->_fertility_report;
 
     $self->_next_step('_display_msg');
 
@@ -479,19 +436,30 @@ sub _init_year {
 sub _display_msg {
     my $self = shift;
 
-    $self->throw( display => $self->_clear_msg );
+    # a Moo clearer returns the existing value, if any, like delete does.
+    $self->throw( $self->_clear_msg );
 }
 
-sub summary_report {
+sub _summary_report {
     my $self = shift;
 
-    my $msg = sprintf( "\nYear %d Peasants %d Land %d Grain %d\n",
-        $self->year, $self->population, $self->land, $self->grain );
+    my $msg = sprintf( "\nYear %d Peasants %d Land %d Grain %d Taxes %d\n",
+        $self->year, $self->population, $self->land, $self->grain,
+        $self->tax_paid );
 
     return $msg;
 }
 
-sub fertility_report {
+sub _debug_report {
+    my $self = shift;
+
+    my $msg = sprintf( "\nPeasants %d Land %d Grain %d\n",
+        $self->population, $self->land, $self->grain );
+
+    return $msg;
+}
+
+sub _fertility_report {
     my $self = shift;
 
     my $msg = "Land Fertility:\n";
@@ -511,7 +479,7 @@ sub _feed_the_peasants {
 
     $self->_next_step('_feed_the_peasants')
       and $self->throw(
-        display => "Grain for food [$hint]: ",
+        msg     => "Grain for food [$hint]: ",
         action  => 'get_value',
         default => $hint,
       ) unless $self->input_is_value;
@@ -524,7 +492,7 @@ sub _feed_the_peasants {
     if ( $food > $self->grain ) {
         $self->_next_step('_feed_the_peasants');
 
-        $self->throw( display => $self->_insufficient_grain('feed') );
+        $self->throw( $self->_insufficient_grain('feed') );
     }
     elsif (( ( $food / $self->population ) < 11 )
         && ( $food != $self->grain ) )
@@ -535,7 +503,7 @@ sub _feed_the_peasants {
 
         my $msg = "The peasants demonstrate before the castle\n";
         $msg .= "with sharpened scythes\n\n";
-        $self->throw( display => $msg );
+        $self->throw($msg);
     }
 
     $self->_grain->{food} = -$food;
@@ -577,16 +545,19 @@ sub _purchase_land {
     my $land  = $self->_land;
     my $grain = $self->_grain;
 
-    my $msg = sprintf( "Land to buy at %d HL/HA [0]: ", int( $land->{price} ) );
+    my $msg = '';
+
+    #$msg .= $self->_debug_report;
+    $msg .= sprintf( "Land to buy at %d HL/HA [0]: ", int( $land->{price} ) );
     $self->_next_step('_purchase_land')
-      and $self->throw( display => $msg, action => 'get_value', default => 0 )
+      and $self->throw( msg => $msg, action => 'get_value', default => 0 )
       unless $self->input_is_value();
 
     $self->_next_step('_sell_land') and return
       unless my $buy = $self->input;
 
     $self->_next_step('_purchase_land')
-      and $self->throw( display => $self->_insufficient_grain('buy') )
+      and $self->throw( $self->_insufficient_grain('buy') )
       if ( $buy * $land->price > $self->grain );
 
     $self->land_fertility->{60} += $buy;
@@ -607,7 +578,7 @@ sub _sell_land {
     if ( $land->price - $land->sell_price > MAX_SELL_TRIES ) {
         $grain->{trades} = 0;
 
-        $self->throw( display => "Buyers have lost interest\n" );
+        $self->throw("Buyers have lost interest\n");
     }
 
     my $x1 = 0;
@@ -619,7 +590,7 @@ sub _sell_land {
 
     my $msg = sprintf( "Land to sell at %d HL/HA [0]: ", $price );
     $self->_next_step('_sell_land')
-      and $self->throw( display => $msg, action => 'get_value', default => 0 )
+      and $self->throw( msg => $msg, action => 'get_value', default => 0 )
       unless $self->input_is_value();
 
     return unless my $sold = $self->input;
@@ -672,7 +643,7 @@ sub _sell_land {
     }
 
     $self->{grain} += $grain->{trades};
-    $self->throw( display => $msg ) if $msg;
+    $self->throw($msg) if $msg;
 
     return;
 }
@@ -733,7 +704,7 @@ sub _king_wants_war {
     $msg .= 'hope of provoking war.  Will you pay? [Y/n]: ';
 
     $self->_next_step('_king_wants_war')
-      and $self->throw( display => $msg, action => 'get_yn', default => 'Y' )
+      and $self->throw( msg => $msg, action => 'get_yn', default => 'Y' )
       unless $self->input_is_yn;
 
     my $ans = $self->input;
@@ -749,17 +720,20 @@ sub _grain_production {
 
     my $done = 0;
 
-    my $pop_plant   = $self->population * 4;
-    my $grain_plant = int( $self->grain / 2 );
+    my $pop_plant   = $self->population * LABOR_CAPACITY;
+    my $grain_plant = int( $self->grain / SEED_PER_HA );
     my $max_grain_plant =
       $grain_plant > $self->land ? $self->land : $grain_plant;
     my $max_plant =
       $pop_plant > $max_grain_plant ? $max_grain_plant : $pop_plant;
 
-    my $msg = sprintf( "Land to plant [%d]: ", $max_plant );
+    my $msg = '';
+
+    #$msg .= $self->_debug_report;
+    $msg .= sprintf( "Land to plant [%d]: ", $max_plant );
     $self->_next_step('_grain_production')
       and $self->throw(
-        display => $msg,
+        msg     => $msg,
         action  => 'get_value',
         default => $max_plant
       ) unless $self->input_is_value();
@@ -773,19 +747,19 @@ sub _grain_production {
         $msg = "You don't have enough land\n";
         $msg .= sprintf( "You only have %d HA. of land left\n", $self->land );
     }
-    if ( $plant > ( 4 * $self->population ) ) {
+    if ( $plant > ($pop_plant) ) {
         $msg = "You don't have enough peasants\n";
         $msg .= sprintf( "Your peasants can only plant %d HA. of land\n",
-            4 * $self->population );
+            $pop_plant );
     }
-    $grain->{seed} = -2 * $plant;
+    $grain->{seed} = -( SEED_PER_HA * $plant );
     if ( -$grain->seed > $self->grain ) {
         $msg = $self->_insufficient_grain('plant');
     }
 
     if ($msg) {
         $self->_next_step('_grain_production');
-        $self->throw( display => $msg );
+        $self->throw($msg);
     }
 
     $grain->{yield} = $plant;
@@ -875,12 +849,12 @@ sub _crop_yield_and_losses {
 
     my $grain = $self->_grain;
 
-    if ( $grain->yield == 0 ) {
+    if ( $self->_land->planted == 0 ) {
         $self->{yield} = 0;
     }
     else {
         $self->{yield} =
-          int( $self->yield * ( $x1 / $grain->yield ) * 100 ) / 100;
+          int( $self->yield * ( $x1 / $self->_land->planted ) * 100 ) / 100;
     }
     $self->{_msg} .= sprintf( "Yield = %0.2f HL./HA.\n", $self->yield );
 
@@ -913,7 +887,7 @@ sub _kings_levy {
     $msg .= "HL. of grain instead [Y/n]: ";
 
     $self->_next_step('_kings_levy')
-      and $self->throw( display => $msg, action => 'get_yn', default => 'Y' )
+      and $self->throw( msg => $msg, action => 'get_yn', default => 'Y' )
       unless $self->input_is_yn();
 
     if ( $self->input =~ /^n/i ) {
@@ -955,10 +929,14 @@ sub _war_with_neigbor {
             $war->{potential} += 2;
             $war->{desire} = $self->year + 5;
         }
-        $self->{war} = int( $self->_randomize('war') );
+
+        #$self->{war} = int( $self->_randomize('war') );
+        $war->{tension} = int( $self->_randomize('war') );
         $self->_next_step('_first_strike')
-          unless $self->war > $war->potential;
-        $self->_war->{first_strike} =
+
+          #unless $self->war > $war->potential;
+          unless $war->tension > $war->potential;
+        $war->{first_strike} =
           int(
             $war->{desire} + 85 + ( 18 * $self->_randomize('first_strike') ) );
     }
@@ -970,34 +948,34 @@ sub _war_with_neigbor {
 sub _first_strike {
     my $self = shift;
 
-    $self->_war->{will} = 1.2 - ( $self->_unrest / 16 );
-    my $x5 = int( $self->population * $self->_war->will ) + 13;
+    my $war = $self->_war;
+    $war->{will} = 1.2 - ( $self->_unrest / 16 );
+    my $x5 = int( $self->population * $war->will ) + 13;
 
     my $msg = "A nearby Duke threatens war; Will you attack first [y/N]? ";
 
     $self->_next_step('_first_strike')
-      and $self->throw( display => $msg, action => 'get_yn', default => 'N' )
+      and $self->throw( msg => $msg, action => 'get_yn', default => 'N' )
       unless $self->input_is_yn();
 
     my $population = $self->_population;
 
     $self->{_msg} = '';
     if ( $self->input !~ /^n/i ) {
-        if ( $self->_war->{first_strike} >= $x5 ) {
+        if ( $war->{first_strike} >= $x5 ) {
             $self->_next_step('_goto_war');
             $self->{_msg} = "First strike failed - you need professionals\n";
-            $population->{casualties} =
-              -$self->war - $self->_war->potential - 2;
-            $self->_war->{first_strike} += ( 3 * $population->casualties );
+            $population->{casualties} = -$war->tension - $war->potential - 2;
+            $war->{first_strike} += ( 3 * $population->casualties );
         }
         else {
             $self->{_msg} = "Peace negotiations were successful\n";
 
-            $population->{casualties} = -$self->_war->potential - 1;
-            $self->_war->{first_strike} = 0;
+            $population->{casualties} = -$war->potential - 1;
+            $war->{first_strike}      = 0;
         }
         $self->{population} += $population->casualties;
-        if ( $self->_war->first_strike < 1 ) {
+        if ( $war->first_strike < 1 ) {
             $self->{_unrest} -=
               ( 2 * $population->casualties ) + ( 3 * $population->looted );
         }
@@ -1020,7 +998,7 @@ sub _goto_war {
     my $msg = "Hire how many mercenaries at 40 HL each [$possible]? ";
     $self->_next_step('_goto_war')
       and $self->throw(
-        display => $msg,
+        msg     => $msg,
         action  => 'get_value',
         default => $possible
       ) unless $self->input_is_value();
@@ -1031,7 +1009,7 @@ sub _goto_war {
         my $msg = "There are only 75 mercenaries available for hire\n";
         $self->_next_step('_goto_war');
 
-        $self->throw( display => $msg );
+        $self->throw($msg);
     }
 
     my $war  = $self->_war;
@@ -1040,12 +1018,14 @@ sub _goto_war {
     my $x5 = int( ( $self->population * $war->will ) + ( 7 * $hired ) + 13 );
 
     $war->{desire} = int( $war->desire * WAR_CONSTANT );
-    print "General unrest: $self->{unrest}";
-    print '  annual: ' . ( $self->{_unrest} || 'undef' );
-    print "  desire: $war->{desire}\n";
-    print "will to fight: $war->{will}";
-    print "  x5: $x5\n"
-      if $DEBUG;
+
+    if ($DEBUG) {
+        print "General unrest: $self->{unrest}";
+        print '  annual: ' . ( $self->{_unrest} || 'undef' );
+        print "  desire: $war->{desire}\n";
+        print "will to fight: $war->{will}";
+        print "  x5: $x5\n";
+    }
 
     my $x6 = $war->desire - ( 4 * $hired ) - int( $x5 / 4 );
     $war->{desire}  = $x5 - $war->desire;
@@ -1059,7 +1039,7 @@ sub _goto_war {
         $msg .= "signifies that ";
         $msg .= "the High King has abolished your Ducal right\n\n";
 
-        $self->throw( display => $msg );
+        $self->throw($msg);
     }
 
     my $x1 = $land->spoils;
@@ -1171,11 +1151,11 @@ sub _population_changes {
             $population->{diseased} = -int( $self->population / $x2 );
             $self->{population} += $population->diseased;
         }
-        elsif ( $self->black_D <= 0 ) {
+        elsif ( $self->_black_D <= 0 ) {
             $self->{_msg} = "The BLACK PLAGUE has struck the area\n";
             $self->_next_step('_display_msg');
 
-            $self->{black_D}        = 13;
+            $self->{_black_D}       = 13;
             $x2                     = 3;
             $population->{diseased} = -int( $self->population / $x2 );
             $self->{population} += $population->diseased;
@@ -1188,7 +1168,7 @@ sub _population_changes {
     $population->{deaths} = int( 0.3 - ( $self->population / 22 ) );
     $self->{population} += $population->deaths + $population->births;
 
-    --$self->{black_D};
+    --$self->{_black_D};
 
     return;
 }
@@ -1198,7 +1178,7 @@ sub _harvest_grain {
 
     my $grain = $self->_grain;
 
-    $grain->{yield} = int( $self->yield * $grain->yield );
+    $grain->{yield} = int( $self->yield * $self->_land->planted );
     $self->{grain} += $grain->yield;
 
     my $x1 = $grain->yield - 4000;
@@ -1239,8 +1219,9 @@ sub _update_unrest {
 sub _quit_game {
     my $self = shift;
 
-    $self->_set_status(QUIT_GAME);
+    # empty the stack, don't clear it or it will re-initialize!
     $self->{_steps} = [];
+    $self->_set_status(QUIT_GAME);
 
     return;
 }
@@ -1283,7 +1264,7 @@ sub _end_of_game_check {
         $self->_set_status(RETIRED);
     }
 
-    $self->throw( display => $msg ) if $self->game_over;
+    $self->throw($msg) if $self->game_over;
 
     return;
 }
@@ -1297,7 +1278,7 @@ sub _insufficient_grain {
         buy  => sprintf( "Enough to buy %d HA. of land\n",
             int( $self->grain / $self->_land->{price} ) ),
         plant => sprintf( "Enough to plant %d HA. of land\n\n",
-            int( $self->grain / 2 ) ),
+            int( $self->grain / SEED_PER_HA ) ),
     );
 
     my $msg = "You don't have enough grain\n";
@@ -1306,7 +1287,7 @@ sub _insufficient_grain {
     return $msg;
 }
 
-sub end_of_year_report {
+sub _end_of_year_report {
     my $self = shift;
 
     my $msg = "\n";
@@ -1328,7 +1309,6 @@ sub end_of_year_report {
     for ( sort( keys( %{ $self->_war } ) ) ) {
         $msg .= sprintf( "%-20.20s %d\n", $_, $self->_war->$_ );
     }
-    $msg .= sprintf( "%-20.20s %d\n\n", "War factor", $self->war );
 
     return $msg;
 }
@@ -1336,6 +1316,8 @@ sub end_of_year_report {
 1;
 
 __END__
+
+=pod
 
 =head1 NAME
 
@@ -1357,8 +1339,88 @@ scripts such as the one included but also by graphical UIs such as Tk
 or web sites.
 
 It has been implemented as an "interrupt driven" state-machine. The actual
-executable only needs to provide the callback hooks to display messages
-and collect appropriate input as requested.
+executable application need only concern itself with displaying messages
+and collecting appropriate input as requested.
+
+Here is a minimal script that implements a fully functional game:
+
+  
+ #!/usr/local/bin/perl
+  
+ $| = 1;
+  
+ use strict;
+ use warnings;
+  
+ use Scalar::Util qw( blessed );
+ use Try::Tiny;
+  
+ use Games::Dukedom;
+  
+ my $input_yn = sub {
+    my $default = shift || '';
+  
+    my $ans = <>;
+    chomp($ans);
+    $ans ||= $default;
+  
+    return ( $ans =~ /^(?:q|quit)\s*$/i || $ans =~ /^(?:y|n)$/i )
+      ? lc($ans)
+      : undef;
+ };
+  
+ my $input_value = sub {
+    my $default = shift || 0;
+  
+    my $ans = <>;
+    chomp($ans);
+    $ans = $default unless length($ans);
+  
+    return ( $ans =~ /^(?:q|quit)\s*$/i || $ans !~ /\D/ ) ? $ans : undef;
+ };
+  
+ my %actions = (
+    get_yn    => $input_yn,
+    get_value => $input_value,
+ );
+  
+ play_game();
+  
+ exit;
+  
+ sub play_game {
+    my $game = Games::Dukedom->new;
+  
+    do {
+        try {
+            $game->play_one_year;
+        }
+        catch {
+            if ( blessed($_) && $_->isa('Games::Dukedom::Signal') ) {
+                print $_->msg if $_->msg;
+                return unless defined( $_->action );
+  
+                my $action = $_->action;
+                $game->input( &{ $actions{$action} }( $_->default ) );
+            }
+            else {
+                die $_;
+            }
+        };
+    } until ( $game->game_over );
+  
+    return;
+ }
+  
+ __END__
+  
+
+The important thing to take away from this is how C<play_one_year> is wrapped
+in a try/catch construct and how the script displays messages and requests
+input as needed. This is the heart of the state-machine design.
+
+All of the logic for the game is provided by the module itself and any given
+implementation framework need only handle the I/O as needed.
 
 =head1 CONSTRUCTOR
 
@@ -1370,42 +1432,60 @@ One begins the game by calling the expected C<new> method like so:
   
 It currently does not take any parameters.
 
-=head1 ACCESSORS
+=head2 ATTRIBUTES
 
-=head2 black_D
+All attributes, except for C<input>, have read-only accessors.
 
-=head2 grain
+It should be noted that the values in the attributes will probably not be
+of much use to a game implementation other than to provide specialized reports
+if so desired, hence the reason for being read-only (except for the obvious
+case of C<input>).
 
-=head2 input
+On the other hand, they do provide the current environment for a given year
+of play and B<must> be preserved at all times. It is anticipated that a
+stateless environment such as a CGI script will need to save state in some
+fashion when requesting input and then restore it prior to applying the
+input and re-entering the state-machine.
 
-=head2 king_unrest
+=over 4
 
-=head2 land
+=item input (read-write)
 
-=head2 land_fertility
+This attribute should hold the latest value requested by the state-machine.
+It will recognize the values 'q' and 'quit' (case-insensitive) and set
+the game status to C<QUIT_GAME> if either of those are submitted.
 
-=head2 population
+=item grain
 
-=head2 status
+The current amount of grain on hand.
 
-=head2 unrest
+=item king_unrest
 
-=head2 war
+Used to indicate the level of the King's mistrust.
 
-=head2 year
+=item land
 
-=head2 yield
+The current amount of land on hand.
 
-=head1 METHODS
+=item land_fertility
 
-=head2 play_one_year
+A hash containing "buckets" that indicate how much land is in what condition
+of productivity at any given time. The game assumes that land that is planted
+will lose 20% of it's full productivity each each it is used without being
+allowed to lie fallow.
 
-This method begins a new year of play. It initializes the temporary structures
-and factors and resets the state-machine.
+Basically this means that you should have twice as much total land available
+as what is needed to plant to ensure 100% productivity each year.
 
-=head2 game_over
+=item population
 
-Indicates that current game is over and further play is not possible.
+The current number of peasants in the Dukedom.
+
+=item status
+
+Indicates that the game is either C<RUNNING> or in one of the conditions that
+indicate that the end of the game has been reached.
+
 A "win" is indicated by a positive value, a "loss" by a negative one.
 
 =over 4
@@ -1414,29 +1494,66 @@ A "win" is indicated by a positive value, a "loss" by a negative one.
 
 =item 1 - You have retired
 
-=item -1 - You have been deposed
+=item 0 - Game is running
 
-=item -2 - Don't mess with the King!
+=item -1 - You have abandoned the game
 
-=item -3 - You have abandoned the game
+=item -2 - You have been deposed
+
+=item -3 - Don't mess with the King!
 
 =back
 
+=item unrest
+
+Holds the cummulative population unrest factor. There is also an annual
+unrest factor that gets reset at the start of each game year. The two are
+relatively independent in that an excess of either one can cause you
+to be deposed and end the game.
+
+=item tax_paid
+
+Total amount of taxes paid to the King since the beginnig of the game.
+
+=item year
+
+The current game year. The will automatically end with you being forced into
+retirement at the end of 45 years unless some other cause occurs first.
+
+NOTE: This will be ignored if a state of war currently exists between you and
+the King that must be resolved.
+
+=item yield
+
+The amound of grain produced in the prior yield expressed as HL/HA.
+
+=back
+
+=head1 METHODS
+
+=head2 play_one_year
+
+This method begins a new year of play. It initializes the temporary structures
+and factors and resets the state-machine.
+
+Note: The caller should trap any errors thrown by this method to determine
+the correct course of action to take based on the value of the exception's
+C<msg> and C<action> attributes.
+
+=head2 game_over
+
+Boolean that indicates that current game is over and further play is not
+possible. Check C<status> for reason if desired.
+
 =head2 input_is_yn
 
-Returns a boolean indicating that the current contents of C<< $self->input >>
+Returns a boolean indicating that the current content of C<< $game->input >>
 is either "Y" or "N" (case insensitive).
 
 =head2 input_is_value
 
-Returns a boolean indicating that the current contents of C<< $self->input >>
+Returns a boolean indicating that the current content of C<< $game->input >>
 is "0" or a positive integer.
-
-=head2 summary_report
-
-=head2 fertility_report
-
-=head2 end_of_year_report
 
 =head1 SEE ALSO
 
@@ -1458,7 +1575,7 @@ Jim Bacon, E<lt>jim@nortx.comE<gt>
 Copyright (C) 2014 by Jim Bacon
 
 This library is free software; you can redistribute it and/or modify it
-under the same terms as Perl itself, either Perl version  or,
+under the same terms as Perl itself, either Perl version 5.8 or,
 at your option, any later version of Perl 5 you may have available.
 
 =cut

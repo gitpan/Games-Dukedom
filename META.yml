@@ -18,10 +18,11 @@ no_index:
   directory:
     - t
     - inc
+    - xt
 requires:
   Moo: '0'
   MooX::ClassAttribute: '0'
   MooX::StrictConstructor: '0'
   MooX::Struct: '0'
   Throwable: '0'
-version: v0.1_1
+version: v0.1.1

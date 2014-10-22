@@ -20,6 +20,9 @@ ok( $game->input('dummy'), 'input is not empty prior to throw' );
 throws_ok( sub { $game->throw }, $pkg, "signal throws a $pkg" );
 ok( !exists( $game->{input} ), 'input was cleared by throw' );
 
+throws_ok( sub { $game->throw('message only') }, $pkg, 'accepts single param' );
+is( $@->msg, 'message only', 'single param seen as "msg" param' );
+
 done_testing();
 
 exit;

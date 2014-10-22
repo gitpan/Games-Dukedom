@@ -12,7 +12,9 @@ WriteMakefile(
     VERSION_FROM       => 'lib/Games/Dukedom.pm',
     ABSTRACT_FROM      => 'lib/Games/Dukedom.pm',
     LICENSE            => 'Perl',
-    PL_FILES           => {},    CONFIGURE_REQUIRES => {
+    PL_FILES           => {},
+    EXE_FILES          => ['bin/dukedom'],
+    CONFIGURE_REQUIRES => {
         'ExtUtils::MakeMaker' => 6.59,
     },
     BUILD_REQUIRES => {
@@ -20,6 +22,7 @@ WriteMakefile(
         'Test::Exception' => 0,
     },
     PREREQ_PM => {
+
         # NOTE the use of quotes around non-numeric strings!
         #'ABC'              => 0,
         #'Foo::Bar::Module' => 5.004001,
@@ -34,5 +37,6 @@ WriteMakefile(
         'Throwable'               => 0,
     },
     dist  => { COMPRESS => 'gzip -9f', SUFFIX => 'gz', },
-    clean => { FILES => 'Games-Dukedom-*' },
+    clean => { FILES    => 'Games-Dukedom-*' },
+    META_MERGE => { no_index => { directory => [qw( xt )] } },
 );

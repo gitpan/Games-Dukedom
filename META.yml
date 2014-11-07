@@ -27,4 +27,4 @@ requires:
   Throwable: '0'
   Try::Tiny: '0'
   perl: '5.006000'
-version: v0.1.2
+version: v0.1.3
